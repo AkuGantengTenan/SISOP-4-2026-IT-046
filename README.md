@@ -5,323 +5,167 @@
 
 **Penjelasan**
 
-Pertama buat file bernama `protocol.h`
+Pertama kita install file `amba_files` , kemudian di unzip
 
-```
-#ifndef PROTOCOL_H
-#define PROTOCOL_H
 
-#define PORT        4242
-#define MAX_CLIENTS 64
-#define NAME_SIZE   64
-#define BUF_SIZE    4096
-#define OUT_SIZE    (BUF_SIZE + NAME_SIZE + 64)
-#define ADMIN_NAME  "The Knights"
-#define ADMIN_PASS  "protocol7"
-
-#endif
-```
-
-Include guard di baris pertama dipakai supaya header tidak didefinisikan ganda. PORT 4242 adalah nomor port TCP yang harus sama antara server dan client. MAX_CLIENTS 64 jadi batas jumlah koneksi sekaligus. NAME_SIZE (64) dan BUF_SIZE (4096) dipakai untuk buffer nama dan pesan, sedangkan OUT_SIZE lebih besar agar gabungan nama + pesan tidak overflow. ADMIN_NAME dan ADMIN_PASS adalah kredensial admin yang di-hardcode untuk verifikasi oleh server.
-
-Buat file `wired.c`
+Buat file bernama `kenz_rescue.c`
 
 ```c
-void log_entry(const char *level, const char *msg) {
-    time_t now = time(NULL);
-    struct tm *t = localtime(&now);
-    char ts[32];
-    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", t);
+#define FUSE_USE_VERSION 31
+#define PATH_MAX 4096 // Pengganti limits.h
 
-    pthread_mutex_lock(&log_mutex);
-    fprintf(log_file, "[%s] [%s] [%s]\n", ts, level, msg);
-    fflush(log_file);
-    pthread_mutex_unlock(&log_mutex);
-}
+#include <fuse.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#include <stdlib.h>
 
-void broadcast(const char *msg, int exclude_fd) {
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].active && !clients[i].is_admin &&
-            clients[i].fd != exclude_fd) {
-            send(clients[i].fd, msg, strlen(msg), 0);
-        }
-    }
-    pthread_mutex_unlock(&clients_mutex);
+char source_dir[PATH_MAX];
+
+static void get_full_path(char fpath[PATH_MAX], const char *path) {
+    strcpy(fpath, source_dir);
+    strncat(fpath, path, PATH_MAX - strlen(source_dir) - 1);
 }
 ```
 
-`log_entry()` dipakai untuk mencatat kejadian penting ke history.log dengan format waktu `[YYYY-MM-DD HH:MM:SS] [Level] [Pesan]`, menggunakan `time()`, `localtime()`, dan `strftime()`. Setelah menulis, `fflush()` memastikan data langsung tersimpan ke disk, dan seluruh proses dibungkus mutex agar aman dipakai banyak thread. Sedangkan `broadcast()` meneruskan pesan ke semua client kecuali pengirim (exclude_fd) dan admin, dengan mutex menjaga konsistensi array clients selama iterasi.
+Bagian ini mengatur versi FUSE yang digunakan dan memuat header standar bahasa C yang diperlukan untuk manipulasi string dan sistem file. Variabel global `source_dir` digunakan untuk menyimpan lokasi absolute dari folder sumber, sehingga program selalu tahu ke mana harus mencari file aslinya. Fungsi `get_full_path` adalah fungsi pembantu untuk menggabungkan nama file dari FUSE dengan direktori sumber tersebut.
+
 
 ```c
-void handle_admin_rpc(int idx, const char *cmd) {
-    int  fd = clients[idx].fd;
-    char out[OUT_SIZE];
-
-    if (strcmp(cmd, "1") == 0) {
-        log_entry("Admin", "RPC_GET_USERS");
-        char list[OUT_SIZE] = "Active users:\n";
-        int  count = 0;
-        pthread_mutex_lock(&clients_mutex);
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active && !clients[i].is_admin) {
-                count++;
-                strncat(list, " - ", sizeof(list) - strlen(list) - 1);
-                strncat(list, clients[i].name, sizeof(list) - strlen(list) - 1);
-                strncat(list, "\n", sizeof(list) - strlen(list) - 1);
-            }
-        }
-        pthread_mutex_unlock(&clients_mutex);
-        snprintf(out, sizeof(out), "%sTotal: %d\nCommand >> ", list, count);
-        send(fd, out, strlen(out), 0);
-
-    } else if (strcmp(cmd, "2") == 0) {
-        log_entry("Admin", "RPC_GET_UPTIME");
-        double uptime = difftime(time(NULL), start_time);
-        snprintf(out, sizeof(out), "Server uptime: %.0f seconds\nCommand >> ", uptime);
-        send(fd, out, strlen(out), 0);
-
-    } else if (strcmp(cmd, "3") == 0) {
-        log_entry("Admin", "RPC_SHUTDOWN");
-        log_entry("System", "EMERGENCY SHUTDOWN INITIATED");
-        const char *notice = "[System] Server is shutting down.\n";
-        pthread_mutex_lock(&clients_mutex);
-        for (int i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].active) {
-                send(clients[i].fd, notice, strlen(notice), 0);
-                close(clients[i].fd);
-                clients[i].active = 0;
-            }
-        }
-        pthread_mutex_unlock(&clients_mutex);
-        fclose(log_file);
-        close(server_fd);
-        exit(0);
-
-    } else if (strcmp(cmd, "4") == 0) {
-        const char *bye = "[System] Disconnecting from The Wired...\n";
-        send(fd, bye, strlen(bye), 0);
-        pthread_mutex_lock(&clients_mutex);
-        disconnect_client(idx);
-        pthread_mutex_unlock(&clients_mutex);
-    } else {
-        snprintf(out, sizeof(out), "[System] Unknown command.\nCommand >> ");
-        send(fd, out, strlen(out), 0);
+static int xmp_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {
+    (void) fi;
+    if (strcmp(path, "/tujuan.txt") == 0) {
+        memset(stbuf, 0, sizeof(struct stat));
+        stbuf->st_mode = S_IFREG | 0444; 
+        stbuf->st_nlink = 1;
+        stbuf->st_size = 66; 
+        return 0;
     }
+
+    char fpath[PATH_MAX];
+    get_full_path(fpath, path);
+    int res = lstat(fpath, stbuf);
+    if (res == -1) return -errno;
+    return 0;
 }
 ```
 
-`handle_admin_rpc()` menjalankan perintah RPC dari admin berdasarkan input angka 1–4. Menu 1 mengirim daftar nama semua client aktif (non-admin) beserta jumlahnya. Menu 2 menghitung uptime dengan `difftime()` dari waktu mulai server. Menu 3 mematikan server: memberi tahu semua client, menutup koneksi, log, socket, lalu `exit(0)`. Menu 4 hanya memutus koneksi admin, sementara server tetap melayani client lain.
+Fungsi `getattr` bertugas merespons permintaan metadata, seperti saat Anda menjalankan perintah stat atau ls -l. Jika sistem mendeteksi bahwa user sedang menanyakan info tentang `/tujuan.txt`, program akan langsung mencegatnya dan memalsukan datanya dengan memberikan ukuran pasti 66 bytes dan hak akses read-only (0444). Untuk file selain itu, permintaan metadata hanya akan diteruskan ke file aslinya di folder sumber.
 
 ```c
-void *client_thread(void *arg) {
-    int fd = *(int *)arg;
-    free(arg);
+static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags) {
+    char fpath[PATH_MAX];
+    get_full_path(fpath, path);
 
-    int slot = -1;
-    pthread_mutex_lock(&clients_mutex);
-    for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (!clients[i].active) {
-            clients[i].fd     = fd;
-            clients[i].active = 1;
-            slot = i;
-            break;
-        }
+    DIR *dp = opendir(fpath);
+    if (dp == NULL) return -errno;
+
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        struct stat st;
+        memset(&st, 0, sizeof(st));
+        st.st_ino = de->d_ino;
+        st.st_mode = de->d_type << 12;
+        if (filler(buf, de->d_name, &st, 0, 0)) break;
     }
-    pthread_mutex_unlock(&clients_mutex);
+    closedir(dp);
 
-    if (slot == -1) {
-        const char *full = "[System] Server penuh.\n";
-        send(fd, full, strlen(full), 0);
-        close(fd);
-        return NULL;
-    }
-
-    send(fd, "Enter your name: ", 17, 0);
-```
-
-Setiap client yang masuk dibuatkan satu thread baru yang menjalankan fungsi ini.
-
-```c
-// KONDISI 1: belum punya nama → registrasi
-        if (clients[slot].name[0] == '\0') {
-            int duplicate = 0;
-            pthread_mutex_lock(&clients_mutex);
-            for (int i = 0; i < MAX_CLIENTS; i++) {
-                if (i == slot) continue;
-                if (clients[i].active && strcmp(clients[i].name, buf) == 0)
-                    { duplicate = 1; break; }
-            }
-            pthread_mutex_unlock(&clients_mutex);
-
-            if (duplicate) {
-                send(fd, "[System] The identity is already synchronized in The Wired.\nEnter your name: ", 78, 0);
-                continue;
-            }
-
-            strncpy(clients[slot].name, buf, NAME_SIZE - 1);
-
-            if (strcmp(buf, ADMIN_NAME) == 0) {
-                waiting_password = 1;
-                send(fd, "Enter Password: ", 16, 0);
-                continue;
-            }
-
-            char welcome[BUF_SIZE];
-            snprintf(welcome, sizeof(welcome), "--- Welcome to The Wired, %s ---\n> ", buf);
-            send(fd, welcome, strlen(welcome), 0);
-            char log_msg[BUF_SIZE];
-            snprintf(log_msg, sizeof(log_msg), "User '%s' connected", buf);
-            log_entry("System", log_msg);
-            continue;
-        }
-// KONDISI 2: menunggu password admin
-        if (waiting_password) {
-            if (strcmp(buf, ADMIN_PASS) == 0) {
-                pthread_mutex_lock(&clients_mutex);
-                clients[slot].is_admin = 1;
-                pthread_mutex_unlock(&clients_mutex);
-                waiting_password = 0;
-                send(fd, "[System] Authentication Successful...\n\n=== THE KNIGHTS CONSOLE ===\n1. Check Active Entities (Users)\n2. Check Server Uptime\n3. Execute Emergency Shutdown\n4. Disconnect\nCommand >> ", 170, 0);
-                log_entry("System", "User 'The Knights' connected");
-            } else {
-                send(fd, "[System] Authentication Failed.\nEnter Password: ", 48, 0);
-            }
-            continue;
-        }
-
-        // KONDISI 3: admin mengirim perintah RPC
-        if (clients[slot].is_admin) {
-            handle_admin_rpc(slot, buf);
-            if (!clients[slot].active) break;
-            continue;
-        }
-
-        // KONDISI 4: client biasa mengetik /exit
-        if (strcmp(buf, "/exit") == 0) {
-            send(fd, "[System] Disconnecting from The Wired...\n", 41, 0);
-            pthread_mutex_lock(&clients_mutex);
-            disconnect_client(slot);
-            pthread_mutex_unlock(&clients_mutex);
-            break;
-        }
-
-        // KONDISI 5: pesan chat biasa → broadcast
-        char out[OUT_SIZE];
-        snprintf(out, sizeof(out), "[%s]: %s\n", clients[slot].name, buf);
-        broadcast(out, fd);
-        send(fd, "> ", 2, 0);
-        char log_msg[BUF_SIZE];
-        snprintf(log_msg, sizeof(log_msg), "[%s]: %s", clients[slot].name, buf);
-        log_entry("User", log_msg);
-    }
-    return NULL;
-}
-
-```
-
-Kondisi 2 menangani verifikasi password admin — kalau cocok dengan ADMIN_PASS, flag is_admin diset dan console admin ditampilkan, kalau salah client diminta input ulang tanpa ada batasan percobaan. Kondisi 3 meneruskan semua input admin ke handle_admin_rpc(), lalu mengecek apakah setelah RPC dieksekusi client masih aktif (misalnya admin memilih menu 4 untuk disconnect). Kondisi 4 menangani perintah /exit dari user biasa — kirim pesan perpisahan, cleanup, keluar loop. Kondisi 5 adalah jalur paling sering dilalui — pesan chat diformat menjadi [nama]: pesan, di-broadcast ke semua client lain, prompt > dikembalikan ke pengirim, dan pesan dicatat ke log.
-
-```c
-int main(void) {
-    start_time = time(NULL);
-    log_file = fopen("history.log", "a");
-    signal(SIGINT, shutdown_server);
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port        = htons(PORT);
-
-    bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
-    listen(server_fd, 10);
-
-    memset(clients, 0, sizeof(clients));
-    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].fd = -1;
-
-    log_entry("System", "SERVER ONLINE");
-    printf("[The Wired] Server berjalan di port %d\n", PORT);
-
-    while (1) {
-        struct sockaddr_in client_addr;
-        socklen_t addr_len = sizeof(client_addr);
-        int new_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-        if (new_fd < 0) { perror("accept"); continue; }
-
-        int *fd_ptr = malloc(sizeof(int));
-        *fd_ptr = new_fd;
-
-        pthread_t tid;
-        pthread_create(&tid, NULL, client_thread, fd_ptr);
-        pthread_detach(tid);
+    if (strcmp(path, "/") == 0) {
+        struct stat st;
+        memset(&st, 0, sizeof(st));
+        st.st_mode = S_IFREG | 0444;
+        filler(buf, "tujuan.txt", &st, 0, 0);
     }
     return 0;
 }
 ```
 
-`main()` menginisialisasi server lalu masuk ke loop utama. Pertama mencatat `start_time` dan membuka `history.log` dengan mode append. Socket dibuat dengan `socket()`, lalu `setsockopt(SO_REUSEADDR)` agar bisa bind ulang cepat setelah restart. `bind()` mengikat ke port 4242 di semua interface, dan `listen()` mulai menerima koneksi dengan backlog 10. Setelah itu, loop `while(1)` menunggu client baru lewat `accept()`, menghasilkan fd yang disalin ke heap untuk mencegah race condition. Setiap koneksi dijalankan di thread baru dengan `pthread_create` yang langsung di-`pthread_detach` agar resource dibersihkan otomatis tanpa perlu `pthread_join`.
-
-Buat file `navi.c`
+Fungsi `readdir` dipanggil saat perintah ls dijalankan untuk melihat isi folder mount. Program akan membaca seluruh isi folder asli dan menampilkannya ke layar. Bagian terpenting ada di kondisi if terakhir; jika user sedang melihat isi root directory dari sistem mount, program secara paksa menyisipkan nama tujuan.txt ke dalam output, sehingga file tersebut seolah-olah nyata dan ada di dalam folder.
 
 ```c
+static int xmp_open(const char *path, struct fuse_file_info *fi) {
+    if (strcmp(path, "/tujuan.txt") == 0) {
+        if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EACCES;
+        return 0;
+    }
+
+    char fpath[PATH_MAX];
+    get_full_path(fpath, path);
+    int res = open(fpath, fi->flags);
+    if (res == -1) return -errno;
+    close(res);
+    return 0;
+}
+```
+
+Fungsi `open` dipanggil sebelum sebuah file mulai dibaca atau ditulis, contohnya saat mengeksekusi `cat`. Fungsi ini berperan sebagai pos keamanan sederhana. Jika user mencoba mengakses `/tujuan.txt` selain untuk dibaca, program akan langsung menolak dan mengembalikan error Access Denied. Untuk file dokumen biasa, program sekadar mengecek apakah file aslinya bisa dibuka dengan izin yang sesuai.
+
+```c
+static int xmp_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    if (strcmp(path, "/tujuan.txt") == 0) {
+        char gabungan[1024] = "";
+        for (int i = 1; i <= 7; i++) {
+            char filepath[PATH_MAX];
+            snprintf(filepath, sizeof(filepath), "%s/%d.txt", source_dir, i);
+            FILE *f = fopen(filepath, "r");
+            if (f) {
+                char line[256];
+                while (fgets(line, sizeof(line), f)) {
+                    if (strncmp(line, "KOORD: ", 7) == 0) {
+                        char *val = line + 7;
+                        val[strcspn(val, "\r\n")] = 0; 
+                        strcat(gabungan, val);
+                        break;
+                    }
+                }
+                fclose(f);
+            }
+        }
+        char final_text[1024];
+        snprintf(final_text, sizeof(final_text), "Tujuan Mas Amba: %s\n", gabungan);
+        
+        size_t len = strlen(final_text);
+        if (offset < len) {
+            if (offset + size > len) size = len - offset;
+            memcpy(buf, final_text + offset, size);
+        } else {
+            size = 0;
+        }
+        return size;
+    }
+
+    // Passthrough file normal disembunyikan untuk menyingkat snippet
+}
+```
+
+Fungsi `read` merupakan inti pengerjaan logika on-the-fly. Saat user mencoba membaca isi `/tujuan.txt`, program tidak mencari file fisik. Sebagai gantinya, ia melakukan perulangan untuk membuka file 1.txt hingga 7.txt satu per satu. Di dalam setiap file, program mencari baris teks yang berawalan "KOORD: ", mengambil angkanya, dan merangkainya menjadi satu kalimat utuh berawalan "Tujuan Mas Amba: ". Kalimat inilah yang disuntikkan ke layar pengguna.
+
+```c
+static struct fuse_operations xmp_oper = {
+    .getattr    = xmp_getattr,
+    .readdir    = xmp_readdir,
+    .open       = xmp_open,
+    .read       = xmp_read,
+};
+
 int main(int argc, char *argv[]) {
-    const char *host = (argc > 1) ? argv[1] : "127.0.0.1";
-    int         port = (argc > 2) ? atoi(argv[2]) : PORT;
+    if (argc < 3) return 1;
 
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    realpath(argv[1], source_dir);
 
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port   = htons(port);
-    inet_pton(AF_INET, host, &server_addr.sin_addr);
+    argv[1] = argv[2];
+    argc--;
 
-    connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr));
-```
-
-Client menerima host dan port opsional dari argumen command line — jika tidak diisi, default ke 127.0.0.1 (localhost) dan port dari protocol.h. Ini memungkinkan client dijalankan sebagai ./navi untuk konek lokal, atau ./navi 192.168.1.5 4242 untuk konek ke server di komputer lain. inet_pton() mengkonversi string IP seperti "127.0.0.1" ke format biner yang dipahami sistem. connect() adalah titik di mana koneksi TCP benar-benar terjadi.
-
-```c
-char   buf[BUF_SIZE];
-    fd_set read_fds;
-
-    while (1) {
-        FD_ZERO(&read_fds);
-        FD_SET(sock, &read_fds);
-        FD_SET(STDIN_FILENO, &read_fds);
-
-        select(sock + 1, &read_fds, NULL, NULL, NULL);
-
-        if (FD_ISSET(sock, &read_fds)) {
-            int n = recv(sock, buf, sizeof(buf) - 1, 0);
-            if (n <= 0) {
-                printf("[System] Koneksi ke server terputus.\n");
-                break;
-            }
-            buf[n] = '\0';
-            printf("%s", buf);
-            fflush(stdout);
-        }
-
-        if (FD_ISSET(STDIN_FILENO, &read_fds)) {
-            if (fgets(buf, sizeof(buf), stdin) == NULL) break;
-            buf[strcspn(buf, "\n")] = '\0';
-            send(sock, buf, strlen(buf), 0);
-            if (strcmp(buf, "/exit") == 0) break;
-        }
-    }
-
-    close(sock);
-    return 0;
+    return fuse_main(argc, argv, &xmp_oper, NULL);
 }
 ```
 
-`select()` yang memberitahu program mana dari beberapa fd yang sudah siap dibaca tanpa harus memblok di salah satunya. `FD_ZERO` mereset set fd, `FD_SET` mendaftarkan dua fd yang ingin dipantau yaitu sock (socket ke server) dan `STDIN_FILENO` (keyboard). `select()` kemudian memblok sampai salah satu atau keduanya ada data, lalu `FD_ISSET` mengecek mana yang siap. Jika socket yang siap, data dari server diterima dan ditampilkan ke layar. Jika stdin yang siap, ketikan user dibaca dan dikirim ke server. 
+Bagian penutup ini berfungsi sebagai "jembatan" antara program Anda dengan sistem operasi. Struct `xmp_oper` bertugas memetakan perintah standar Linux ke fungsi-fungsi kustom. Di dalam fungsi main, program mengamankan jalur folder sumber ke dalam variabel `source_dir` menggunakan fungsi realpath agar letaknya tidak hilang walau FUSE berjalan di latar . Terakhir, sistem FUSE resmi dijalankan melalui panggilan fungsi `fuse_main`.
+
 
 **Output**
 
